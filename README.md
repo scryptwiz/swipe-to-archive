@@ -2,7 +2,7 @@
 
 A swipe-to-archive gesture UI built with React Native, Expo, and Reanimated.
 
-![Demo](./swipe-to-archive-demo.gif)
+<img src="./swipe-to-archive-demo.gif" width="400" alt="Demo" />
 
 ## How it works
 
