@@ -1,151 +1,169 @@
-import React, { useState, useCallback, useRef } from "react";
+import SwipeCard from "@/components/SwipeCard";
+import Toast from "@/components/Toast";
+import { generateEmails, type Email } from "@/data/emails";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
+  ActivityIndicator,
+  FlatList,
   StatusBar,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
-import SwipeCard from "@/components/SwipeCard";
-import ArchivedToast from "@/components/ArchivedToast";
 
-const SAMPLE_EMAILS = [
-  {
-    id: "1",
-    sender: "Sarah Johnson",
-    avatar: "SJ",
-    avatarColor: "#EF4444",
-    subject: "Q4 Design Review - Final Feedback",
-    preview:
-      "Hey! I've gone through the prototype you shared yesterday. The new layout is great, love the micro-interactions on the card.",
-    time: "9:41 AM",
-    unread: true,
-  },
-  {
-    id: "2",
-    sender: "Marcus Chen",
-    avatar: "MC",
-    avatarColor: "#0EA5E9",
-    subject: "Re: Sprint Planning Tomorrow",
-    preview:
-      "Can we push the standup to 10am? I have a conflicting call with the EU team at 9. The animation PR is almost ready.",
-    time: "8:15 AM",
-    unread: true,
-  },
-  {
-    id: "3",
-    sender: "Vercel",
-    avatar: "V",
-    avatarColor: "#000000",
-    subject: "Deployment Successful - Production",
-    preview:
-      "Your latest push to main has been deployed. Build time: 43s. 0 errors, 2 warnings.",
-    time: "7:02 AM",
-    unread: false,
-  },
-  {
-    id: "4",
-    sender: "Priya Nair",
-    avatar: "PN",
-    avatarColor: "#F59E0B",
-    subject: "Your Figma file is ready",
-    preview:
-      "Finished cleaning up the component library. Everything is auto-layouted and uses the new variable tokens.",
-    time: "Yesterday",
-    unread: false,
-  },
-  {
-    id: "5",
-    sender: "GitHub",
-    avatar: "GH",
-    avatarColor: "#24292E",
-    subject: "[swipe-to-archive] PR #47 merged",
-    preview:
-      "SwipeCard: Add haptic feedback and blur intensity interpolation. Merged by @kelvin into main. +142 −38.",
-    time: "Yesterday",
-    unread: false,
-  },
-  {
-    id: "6",
-    sender: "Apple",
-    avatar: "A",
-    avatarColor: "#6B7280",
-    subject: "Your receipt from the App Store",
-    preview:
-      "Amount billed: $0.00. App: Expo Go. Thank you for using TestFlight.",
-    time: "Mon",
-    unread: false,
-  },
-  {
-    id: "7",
-    sender: "Lena Müller",
-    avatar: "LM",
-    avatarColor: "#8B5CF6",
-    subject: "Catch-up this week?",
-    preview:
-      "Hey! It's been a while. Are you free for a quick coffee catch-up? I'm around Wednesday afternoon.",
-    time: "Sun",
-    unread: false,
-  },
-];
+const ALL_EMAILS = generateEmails(2500);
+const PAGE_SIZE = 50;
 
 export default function Index() {
-  const [emails, setEmails] = useState(SAMPLE_EMAILS);
-  const [showToast, setShowToast] = useState(false);
-  const [toastSender, setToastSender] = useState("");
+  const [emails, setEmails] = useState<Email[]>(ALL_EMAILS);
+  const [lastArchived, setLastArchived] = useState<{
+    email: Email;
+    index: number;
+  } | null>(null);
+  const [toastVisible, setToastVisible] = useState(false);
+  const [toastSequence, setToastSequence] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [lastRestoredId, setLastRestoredId] = useState<string | null>(null);
 
-  // Keep a ref to the archived email and its original index so Undo can restore it
-  const lastArchivedRef = useRef<{ email: typeof SAMPLE_EMAILS[0]; index: number } | null>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const emailsRef = useRef(emails);
+  const lastArchivedRef = useRef(lastArchived);
+  const undoItemRef = useRef<{ email: Email; index: number } | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const undoneIdsRef = useRef<Set<string>>(new Set());
 
-  const handleArchive = useCallback((id: string, sender: string) => {
-    setEmails((prev) => {
-      const index = prev.findIndex((e) => e.id === id);
-      const email = prev[index];
-      if (email) {
-        lastArchivedRef.current = { email, index };
-      }
-      return prev.filter((e) => e.id !== id);
-    });
-    setToastSender(sender);
-    setShowToast(true);
+  useEffect(() => {
+    emailsRef.current = emails;
+  }, [emails]);
 
-    // Clear any previous timer
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => {
-      setShowToast(false);
-      lastArchivedRef.current = null;
-    }, 2800);
+  useEffect(() => {
+    lastArchivedRef.current = lastArchived;
+  }, [lastArchived]);
+
+  const handleArchiveStart = useCallback((id: string) => {
+    const originalIndex = emailsRef.current.findIndex((e) => e.id === id);
+    if (originalIndex === -1) return;
+    const archivedEmail = emailsRef.current[originalIndex];
+
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+    }
+
+    const item = { email: archivedEmail, index: originalIndex };
+    undoItemRef.current = item;
+    setLastArchived(item);
+    setToastVisible(true);
+    setToastSequence((prev) => prev + 1);
+
+    timerRef.current = setTimeout(() => {
+      setToastVisible(false);
+      setTimeout(() => {
+        setLastArchived((current) =>
+          current?.email.id === archivedEmail.id ? null : current,
+        );
+      }, 200);
+    }, 1500);
+  }, []);
+
+  const handleArchiveComplete = useCallback((id: string) => {
+    if (undoneIdsRef.current.has(id)) {
+      undoneIdsRef.current.delete(id);
+      return;
+    }
+    setEmails((prev) => (prev || []).filter((e) => e.id !== id));
   }, []);
 
   const handleUndo = useCallback(() => {
-    // Cancel the auto-dismiss timer
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setShowToast(false);
+    const item = undoItemRef.current;
+    if (!item) return;
+    undoItemRef.current = null;
 
-    // Restore the archived email at its original position
-    const saved = lastArchivedRef.current;
-    if (saved) {
-      setEmails((prev) => {
-        const next = [...prev];
-        const insertAt = Math.min(saved.index, next.length);
-        next.splice(insertAt, 0, saved.email);
-        return next;
-      });
-      lastArchivedRef.current = null;
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
     }
+
+    const isStillInEmails = emailsRef.current.some(
+      (e) => e.id === item.email.id,
+    );
+    if (isStillInEmails) {
+      undoneIdsRef.current.add(item.email.id);
+    } else {
+      setLastRestoredId(item.email.id);
+      setEmails((prev) => {
+        const copy = [...(prev || [])];
+        const insertIdx = Math.min(item.index, copy.length);
+        copy.splice(insertIdx, 0, item.email);
+        return copy;
+      });
+      setVisibleCount((prev) => Math.max(prev, item.index + 1));
+      setTimeout(() => {
+        setLastRestoredId((cur) => (cur === item.email.id ? null : cur));
+      }, 350);
+    }
+
+    setToastVisible(false);
+    setLastArchived(null);
   }, []);
 
+  const handleDismissToast = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setToastVisible(false);
+    setTimeout(() => {
+      setLastArchived(null);
+    }, 200);
+  }, []);
 
-  const unreadCount = emails.filter((e) => e.unread).length;
+  const safeEmails = useMemo(() => emails || [], [emails]);
+
+  const visibleEmails = useMemo(
+    () => safeEmails.slice(0, visibleCount),
+    [safeEmails, visibleCount],
+  );
+
+  const unreadCount = useMemo(
+    () => safeEmails.filter((e) => e.unread).length,
+    [safeEmails],
+  );
+
+  const handleLoadMore = useCallback(() => {
+    setVisibleCount((prev) => {
+      const next = prev + PAGE_SIZE;
+      return next >= safeEmails.length ? safeEmails.length : next;
+    });
+  }, [safeEmails.length]);
+
+  const renderFooter = useCallback(() => {
+    if (visibleCount >= safeEmails.length) return null;
+    return (
+      <View style={styles.footerLoader}>
+        <ActivityIndicator size="small" color="#6366F1" />
+      </View>
+    );
+  }, [visibleCount, safeEmails.length]);
+
+  const renderItem = useCallback(
+    ({ item }: { item: Email }) => (
+      <SwipeCard
+        email={item}
+        onArchiveStart={handleArchiveStart}
+        onArchiveComplete={handleArchiveComplete}
+        isRestoring={item.id === lastRestoredId}
+      />
+    ),
+    [handleArchiveStart, handleArchiveComplete, lastRestoredId],
+  );
+
+  const keyExtractor = useCallback((item: Email) => item.id, []);
 
   return (
     <GestureHandlerRootView style={styles.root}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
       <SafeAreaView style={styles.safe} edges={["top"]}>
-        {/* Header */}
         <View style={styles.header}>
           <View>
             <Text style={styles.heading}>Inbox</Text>
@@ -158,38 +176,38 @@ export default function Index() {
           </View>
         </View>
 
-        {/* Divider */}
         <View style={styles.divider} />
 
-        {/* Email list */}
-        {emails.length === 0 ? (
+        {visibleEmails.length === 0 && safeEmails.length === 0 ? (
           <View style={styles.empty}>
             <Text style={styles.emptyTitle}>All done</Text>
             <Text style={styles.emptySub}>Nothing left in your inbox.</Text>
           </View>
         ) : (
-          <ScrollView
-            style={styles.scroll}
-            contentContainerStyle={styles.scrollContent}
+          <FlatList
+            data={visibleEmails}
+            renderItem={renderItem}
+            keyExtractor={keyExtractor}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
-          >
-            {emails.map((email) => (
-              <SwipeCard
-                key={email.id}
-                email={email}
-                onArchive={handleArchive}
-              />
-            ))}
-            <View style={styles.bottomSpacer} />
-          </ScrollView>
+            contentContainerStyle={styles.listContent}
+            initialNumToRender={50}
+            maxToRenderPerBatch={50}
+            updateCellsBatchingPeriod={30}
+            windowSize={99999}
+            onEndReached={handleLoadMore}
+            onEndReachedThreshold={0.4}
+            ListFooterComponent={renderFooter}
+          />
         )}
       </SafeAreaView>
 
-      <ArchivedToast
-        visible={showToast}
-        sender={toastSender}
+      <Toast
+        visible={toastVisible && lastArchived !== null}
+        sequence={toastSequence}
+        message="Moved to bin"
         onUndo={handleUndo}
+        onDismiss={handleDismissToast}
       />
     </GestureHandlerRootView>
   );
@@ -242,22 +260,14 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: "#E5E7EB",
   },
-  scroll: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
-  scrollContent: {
-    flexGrow: 1,
+  listContent: {
+    paddingBottom: 80,
   },
   empty: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     paddingBottom: 80,
-  },
-  emptyEmoji: {
-    fontSize: 44,
-    marginBottom: 12,
   },
   emptyTitle: {
     fontSize: 20,
@@ -269,7 +279,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#9CA3AF",
   },
-  bottomSpacer: {
-    height: 80,
+  footerLoader: {
+    paddingVertical: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  spinner: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2.5,
+    borderColor: "#E0E7FF",
+    borderTopColor: "#6366F1",
   },
 });

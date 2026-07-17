@@ -1,17 +1,17 @@
-import { useCallback } from "react";
+/* eslint-disable react-hooks/immutability */
+import { memo, useCallback, useEffect, useMemo } from "react";
 import { Dimensions, StyleSheet, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
+  Easing,
   Extrapolation,
-  FadeOutLeft,
   interpolate,
-  Layout,
-  runOnJS,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
   withTiming,
 } from "react-native-reanimated";
+import { scheduleOnRN } from "react-native-worklets";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.4;
@@ -29,37 +29,70 @@ interface Email {
 
 interface SwipeCardProps {
   email: Email;
-  onArchive: (id: string, sender: string) => void;
+  onArchiveStart?: (id: string, sender: string) => void;
+  onArchiveComplete: (id: string) => void;
+  isRestoring?: boolean;
 }
 
-export default function SwipeCard({ email, onArchive }: SwipeCardProps) {
-  const translateX = useSharedValue(0);
-  const cardOpacity = useSharedValue(1);
-  const isArchiving = useSharedValue(false);
+function SwipeCard({
+  email,
+  onArchiveStart,
+  onArchiveComplete,
+  isRestoring = false,
+}: SwipeCardProps) {
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const wasRestoringOnMount = useMemo(() => isRestoring, []);
 
-  const fireArchive = useCallback(() => {
-    onArchive(email.id, email.sender);
-  }, [email.id, email.sender, onArchive]);
+  const translateX = useSharedValue(0);
+  const entranceX = useSharedValue(wasRestoringOnMount ? -SCREEN_WIDTH * 0.2 : 0);
+  const cardOpacity = useSharedValue(wasRestoringOnMount ? 0 : 1);
+  const isArchiving = useSharedValue(false);
+  const rowHeight = useSharedValue(0);
+  const wrapperHeight = useSharedValue(-1);
+
+  useEffect(() => {
+    if (wasRestoringOnMount) {
+      cardOpacity.value = withTiming(1, {
+        duration: 220,
+        easing: Easing.out(Easing.ease),
+      });
+      entranceX.value = withSpring(0, {
+        damping: 22,
+        stiffness: 280,
+        mass: 0.6,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const fireArchiveStart = useCallback(() => {
+    onArchiveStart?.(email.id, email.sender);
+  }, [email.id, email.sender, onArchiveStart]);
+
+  const fireArchiveComplete = useCallback(() => {
+    onArchiveComplete(email.id);
+  }, [email.id, onArchiveComplete]);
 
   const triggerArchive = useCallback(() => {
     "worklet";
-    translateX.value = withTiming(
-      -SCREEN_WIDTH * 1.2,
-      { duration: 260 },
+    scheduleOnRN(fireArchiveStart);
+    translateX.value = withTiming(-SCREEN_WIDTH * 1.2, { duration: 230 });
+    cardOpacity.value = withTiming(0, { duration: 190 });
+    wrapperHeight.value = rowHeight.value > 0 ? rowHeight.value : 80;
+    wrapperHeight.value = withTiming(
+      0,
+      { duration: 230, easing: Easing.out(Easing.ease) },
       () => {
-        runOnJS(fireArchive)();
+        scheduleOnRN(fireArchiveComplete);
       },
     );
-    cardOpacity.value = withTiming(0, { duration: 220 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const pan = Gesture.Pan()
-    // Only activate on a clear horizontal drag
     .activeOffsetX([-12, -1])
-    // If vertical movement comes first, let ScrollView handle it
     .failOffsetY([-6, 6])
     .onUpdate((e) => {
-      // Only left swipe
       translateX.value = Math.min(0, e.translationX);
     })
     .onEnd((e) => {
@@ -70,7 +103,6 @@ export default function SwipeCard({ email, onArchive }: SwipeCardProps) {
         isArchiving.value = true;
         triggerArchive();
       } else {
-        // Smooth, calm snap back
         translateX.value = withSpring(0, {
           damping: 22,
           stiffness: 220,
@@ -79,12 +111,17 @@ export default function SwipeCard({ email, onArchive }: SwipeCardProps) {
       }
     });
 
+  const wrapperStyle = useAnimatedStyle(() => {
+    return wrapperHeight.value < 0
+      ? { overflow: "hidden" }
+      : { height: wrapperHeight.value, overflow: "hidden" };
+  });
+
   const cardStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: translateX.value }],
+    transform: [{ translateX: translateX.value + entranceX.value }],
     opacity: cardOpacity.value,
   }));
 
-  // Archive reveal behind card
   const archiveBgStyle = useAnimatedStyle(() => {
     const progress = Math.abs(translateX.value) / SWIPE_THRESHOLD;
     return {
@@ -98,23 +135,24 @@ export default function SwipeCard({ email, onArchive }: SwipeCardProps) {
   });
 
   return (
-    <Animated.View
-      layout={Layout.duration(220)}
-      exiting={FadeOutLeft.duration(220)}
-      style={styles.wrapper}
-    >
-      {/* Archive label behind */}
+    <Animated.View style={[styles.wrapper, wrapperStyle]}>
       <Animated.View style={[styles.archiveBehind, archiveBgStyle]}>
         <Text style={styles.archiveText}>Archive</Text>
       </Animated.View>
 
       <GestureDetector gesture={pan}>
-        <Animated.View style={[styles.card, cardStyle]}>
-          {/* Unread indicator */}
+        <Animated.View
+          style={[styles.card, cardStyle]}
+          onLayout={(e) => {
+            const h = e.nativeEvent.layout.height;
+            if (h > 0 && rowHeight.value === 0) {
+              rowHeight.value = h;
+            }
+          }}
+        >
           {email.unread && <View style={styles.unreadBar} />}
 
           <View style={styles.row}>
-            {/* Avatar */}
             <View
               style={[
                 styles.avatar,
@@ -126,7 +164,6 @@ export default function SwipeCard({ email, onArchive }: SwipeCardProps) {
               </Text>
             </View>
 
-            {/* Content */}
             <View style={styles.content}>
               <View style={styles.topLine}>
                 <Text
@@ -151,6 +188,8 @@ export default function SwipeCard({ email, onArchive }: SwipeCardProps) {
   );
 }
 
+export default memo(SwipeCard);
+
 const styles = StyleSheet.create({
   wrapper: {
     position: "relative",
@@ -166,7 +205,6 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     justifyContent: "center",
     paddingRight: 28,
-    borderRadius: 0,
     gap: 4,
   },
   archiveText: {
@@ -246,24 +284,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#9CA3AF",
     lineHeight: 18,
-  },
-  meta: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  tag: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  tagText: {
-    fontSize: 11,
-    fontWeight: "600",
-    letterSpacing: 0.1,
-  },
-  attachment: {
-    fontSize: 12,
-    color: "#9CA3AF",
   },
 });
